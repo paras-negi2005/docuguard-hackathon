@@ -46,10 +46,18 @@ def analyze_code_vs_docs(diff_text, readme_text, filename):
     {readme_text}
     
     TASK:
-    1. Identify any NEW environment variables, API endpoints, or dependencies in the code.
+    1. Identify any NEW environment variables, API endpoints, or dependencies.
     2. Check if the README mentions them.
-    3. If MISSING, write a specific comment to the developer.
-    4. If OK, return exactly "OK".
+    3. If MISSING, you MUST write the fix using GitHub Suggestion Markdown.
+    
+    OUTPUT FORMAT:
+    If everything is OK, return: "OK"
+    
+    If edits are needed, return a block like this:
+    ```suggestion
+    (Put the full corrected line of the README here)
+    ```
+    (Then add a short explanation below it).
     """
     
     try:

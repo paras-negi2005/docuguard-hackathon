@@ -6,8 +6,10 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from ghapi.all import GhApi
 from brain import analyze_code_vs_docs
+from utils import find_nearest_readme
 
 load_dotenv()
+
 app = Flask(__name__)
 
 # Load config

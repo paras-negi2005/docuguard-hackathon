@@ -1,64 +1,99 @@
 import os
 import base64
+import hmac
+import hashlib
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from ghapi.all import GhApi
-
-# Import the brain your friend built
 from brain import analyze_code_vs_docs
 
 load_dotenv()
 app = Flask(__name__)
 
+# Load config
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+APP_ID = os.getenv("APP_ID")
+PRIVATE_KEY_PATH = os.getenv("PRIVATE_KEY_PATH")
+
+def verify_signature(payload_body, header_signature):
+    """Verifies that the request came from GitHub."""
+    if not WEBHOOK_SECRET:
+        return True # Skip if no secret set (not recommended for production)
+    if not header_signature:
+        return False
+    
+    sha_name, signature = header_signature.split('=')
+    if sha_name != 'sha256':
+        return False
+    
+    mac = hmac.new(WEBHOOK_SECRET.encode(), msg=payload_body, digestmod=hashlib.sha256)
+    return hmac.compare_digest(mac.hexdigest(), signature)
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    # 1. Security Check
+    signature = request.headers.get('X-Hub-Signature-256')
+    if not verify_signature(request.data, signature):
+        return jsonify({"msg": "Invalid Signature"}), 401
+
     payload = request.json
     event = request.headers.get('X-GitHub-Event')
 
-    # We only care about Pull Requests being opened or updated
+    # 2. Handle Pull Request Events
     if event == 'pull_request' and payload['action'] in ['opened', 'synchronize']:
-        pr_number = payload['pull_request']['number']
-        repo_full_name = payload['repository']['full_name']
-        repo_owner, repo_name = repo_full_name.split('/')
-        installation_id = payload['installation']['id']
-
-        # 1. Authenticate as the GitHub App
-        private_key = open(os.getenv("PRIVATE_KEY_PATH")).read()
-        api = GhApi(app_id=os.getenv("APP_ID"), private_key=private_key)
-        
-        # 2. Get a temporary token for this specific repo
-        token = api.get_access_token(installation_id).token
-        repo_api = GhApi(token=token)
-
-        # 3. Get the list of changed files in the PR
-        files = repo_api.pulls.list_files(repo_owner, repo_name, pr_number)
-
-        # 4. Fetch the README content to compare against
         try:
-            readme = repo_api.repos.get_content(repo_owner, repo_name, "README.md")
-            readme_text = base64.b64decode(readme.content).decode('utf-8')
-        except:
-            readme_text = "No README.md found."
+            pr_number = payload['pull_request']['number']
+            repo_full_name = payload['repository']['full_name']
+            repo_owner, repo_name = repo_full_name.split('/')
+            installation_id = payload['installation']['id']
+            
+            print(f"🚀 Processing PR #{pr_number} in {repo_name}...")
 
-        # 5. Analyze each code file
-        for file in files:
-            filename = file.filename
-            if filename.endswith(('.py', '.js', '.ts')):
-                diff_text = file.get('patch', '') # The actual code changes
-                
-                # CALL THE BRAIN!
-                ai_suggestion = analyze_code_vs_docs(diff_text, readme_text, filename)
+            # 3. Authenticate
+            with open(PRIVATE_KEY_PATH, 'r') as f:
+                private_key = f.read()
+            
+            # Use GhApi to get a token
+            api = GhApi(app_id=APP_ID, private_key=private_key)
+            token = api.get_access_token(installation_id).token
+            repo_api = GhApi(token=token)
 
-                # 6. If Gemini says something is wrong, post a comment
-                if ai_suggestion.strip().upper() != "OK":
-                    repo_api.issues.create_comment(
-                        repo_owner, repo_name, pr_number, 
-                        body=f"🔍 **DocuGuard Analysis for `{filename}`**:\n\n{ai_suggestion}"
-                    )
+            # 4. Get Files & README
+            files = repo_api.pulls.list_files(repo_owner, repo_name, pr_number)
+            
+            try:
+                readme_obj = repo_api.repos.get_content(repo_owner, repo_name, "README.md")
+                readme_text = base64.b64decode(readme_obj.content).decode('utf-8')
+            except:
+                readme_text = "No README.md found."
 
-        return jsonify({"status": "analyzed"}), 200
+            # 5. Analyze Code
+            for file in files:
+                filename = file.filename
+                # Only check code files
+                if filename.endswith(('.py', '.js', '.ts', '.java', '.cpp')):
+                    diff = file.get('patch', '')
+                    if not diff: continue
+                    
+                    # Call Gemini
+                    suggestion = analyze_code_vs_docs(diff, readme_text, filename)
+                    
+                    # 6. Post Comment
+                    if "OK" not in suggestion.upper():
+                        print(f"   ✍️ Posting comment on {filename}...")
+                        body = f"## 🛡️ DocuGuard Review\nI noticed missing documentation in `{filename}`:\n\n{suggestion}"
+                        repo_api.issues.create_comment(
+                            repo_owner, repo_name, pr_number, body=body
+                        )
+
+            return jsonify({"status": "processed"}), 200
+
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            return jsonify({"error": str(e)}), 500
 
     return jsonify({"status": "ignored"}), 200
 
 if __name__ == '__main__':
+    # Running on Port 3000 as requested
     app.run(port=3000)

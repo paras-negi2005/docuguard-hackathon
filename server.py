@@ -1,122 +1,106 @@
 import os
 import base64
-import hmac
-import hashlib
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from ghapi.all import GhApi
+
+# Import the brain function
 from brain import analyze_code_vs_docs
 
+# Load environment variables
 load_dotenv()
+
 app = Flask(__name__)
 
-# --- CONFIG ---
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-APP_ID = os.getenv("APP_ID")
+@app.route('/', methods=['GET'])
+def home():
+    return "DocuGuard is Alive!", 200
 
-# Try to get key from Environment (Render), otherwise from file (Local)
-PRIVATE_KEY_CONTENT = os.getenv("PRIVATE_KEY")
-if not PRIVATE_KEY_CONTENT:
-    path = os.getenv("PRIVATE_KEY_PATH")
-    if path and os.path.exists(path):
-        with open(path, 'r') as f:
-            PRIVATE_KEY_CONTENT = f.read()
-
-# --- HELPER FUNCTIONS ---
-def verify_signature(payload_body, header_signature):
-    if not WEBHOOK_SECRET: return True
-    if not header_signature: return False
-    sha_name, signature = header_signature.split('=')
-    if sha_name != 'sha256': return False
-    mac = hmac.new(WEBHOOK_SECRET.encode(), msg=payload_body, digestmod=hashlib.sha256)
-    return hmac.compare_digest(mac.hexdigest(), signature)
-
-def find_nearest_readme(api, file_path):
-    """Finds a README in the same folder or the root folder."""
-    # 1. Check the file's own directory
-    directory = os.path.dirname(file_path)
-    try:
-        contents = api.repos.get_content(path=directory)
-        if not isinstance(contents, list): contents = [contents]
-        for file in contents:
-            if file.name.lower() == "readme.md":
-                return file
-    except:
-        pass # Directory might not exist or be empty
-        
-    # 2. Fallback: Check the Root Directory
-    try:
-        contents = api.repos.get_content(path="")
-        if not isinstance(contents, list): contents = [contents]
-        for file in contents:
-            if file.name.lower() == "readme.md":
-                return file
-    except:
-        pass
-        
-    return None
-
-# --- WEBHOOK ROUTE ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    signature = request.headers.get('X-Hub-Signature-256')
-    if not verify_signature(request.data, signature):
-        return jsonify({"msg": "Invalid Signature"}), 401
-
+    # 1. Parse Data
     payload = request.json
     event = request.headers.get('X-GitHub-Event')
 
-    if event == 'pull_request' and payload['action'] in ['opened', 'synchronize']:
+    # 2. Filter: Only listen to Pull Request events
+    if event == 'pull_request' and payload['action'] in ['opened', 'synchronize', 'reopened']:
+        
         try:
-            if not PRIVATE_KEY_CONTENT:
-                return jsonify({"error": "No Private Key found"}), 500
+            # --- AUTHENTICATION START ---
+            
+            # Load the Private Key
+            # Check if we are on Render (Env Var) or Local (File)
+            private_key = os.getenv("PRIVATE_KEY_CONTENT") 
+            if not private_key:
+                # Fallback for local testing
+                with open(os.getenv("PRIVATE_KEY_PATH", "private-key.pem"), 'r') as f:
+                    private_key = f.read()
 
-            # 1. Setup GitHub API
+            app_id = os.getenv("APP_ID")
             installation_id = payload['installation']['id']
-            api = GhApi(app_id=APP_ID, private_key=PRIVATE_KEY_CONTENT)
-            token = api.get_access_token(installation_id).token
-            repo_api = GhApi(token=token, owner=payload['repository']['owner']['login'], repo=payload['repository']['name'])
 
-            # 2. Get the Changed Files
+            # Authenticate as the App (JWT)
+            auth_api = GhApi(app_id=app_id, private_key=private_key, token=None)
+
+            # 🛠️ THE FIX IS HERE 🛠️
+            # The guide used a deleted function. This is the correct new way:
+            token = auth_api.apps.create_installation_access_token(installation_id).token
+
+            # Re-initialize API with the actual Token (to do things)
+            repo_api = GhApi(token=token)
+            
+            # --- AUTHENTICATION END ---
+
+            # 3. Get PR Details
             pr_number = payload['pull_request']['number']
-            files = repo_api.pulls.list_files(pr_number)
+            repo_owner = payload['repository']['owner']['login']
+            repo_name = payload['repository']['name']
 
+            print(f"🚀 Processing PR #{pr_number} in {repo_name}...")
+
+            # 4. Get the Diff (Code Changes)
+            files = repo_api.pulls.list_files(repo_owner, repo_name, pr_number)
+            
             for file in files:
                 filename = file.filename
-                # Only check Python files (skip deletions)
-                if filename.endswith('.py') and file.status != 'removed':
+                
+                # Only analyze code files, ignore images/configs
+                if filename.endswith(('.py', '.js', '.ts', '.go', '.java', '.cpp')):
                     
-                    # A. Get the Code
-                    file_content = repo_api.repos.get_content(path=filename)
-                    code_text = base64.b64decode(file_content.content).decode('utf-8')
+                    print(f"🔎 Analyzing {filename}...")
+                    diff_text = file.patch if hasattr(file, 'patch') else "New File"
 
-                    # B. Find the Documentation
-                    readme_file = find_nearest_readme(repo_api, filename)
-                    
-                    if readme_file:
-                        readme_content = base64.b64decode(readme_file.content).decode('utf-8')
-                        
-                        # C. Ask AI to Compare them
-                        analysis = analyze_code_vs_docs(code_text, readme_content, filename)
-                        
-                        # D. Post Comment if there are issues
-                        if analysis["issues_found"]:
-                            comment_body = f"## ⚠️ DocuGuard Alert\n\nI noticed a mismatch in `{filename}`:\n\n{analysis['explanation']}\n\n**Suggested Fix:**\n```markdown\n{analysis['suggested_fix']}\n```"
-                            repo_api.issues.create_comment(issue_number=pr_number, body=comment_body)
-                            print(f"✅ Commented on {filename}")
-                        else:
-                            print(f"✨ {filename} matches the docs.")
+                    # 5. Get the README (Simple fetch)
+                    try:
+                        readme_obj = repo_api.repos.get_content(repo_owner, repo_name, "README.md")
+                        readme_content = base64.b64decode(readme_obj.content).decode('utf-8')
+                    except:
+                        print("⚠️ No README found, assuming empty.")
+                        readme_content = ""
+
+                    # 6. ASK GEMINI (The Brain)
+                    ai_comment = analyze_code_vs_docs(diff_text, readme_content, filename)
+
+                    # 7. Post Comment if unsafe
+                    if ai_comment.strip() != "OK":
+                        body = f"### 🤖 DocuGuard Alert\n{ai_comment}"
+                        repo_api.issues.create_comment(repo_owner, repo_name, pr_number, body=body)
+                        print(f"✅ Comment posted on {filename}")
                     else:
-                        print(f"⚠️ No README found for {filename}")
+                        print(f"✨ {filename} is safe.")
 
-            return jsonify({"status": "processed"}), 200
+            return jsonify({"status": "success"}), 200
 
         except Exception as e:
-            print(f"❌ Error: {e}")
-            return jsonify({"error": str(e)}), 500
+            print(f"❌ Error processing PR: {e}")
+            # Printing the full traceback helps debugging
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)}), 500
 
     return jsonify({"status": "ignored"}), 200
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 3000))
+    # Run on port 10000 for Render, or default 3000
+    port = int(os.environ.get('PORT', 3000))
     app.run(host='0.0.0.0', port=port)

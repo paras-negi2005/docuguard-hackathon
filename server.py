@@ -7,45 +7,54 @@ from dotenv import load_dotenv
 from ghapi.all import GhApi
 from brain import analyze_code_vs_docs
 from utils import find_nearest_readme
-import textwrap
 
 load_dotenv()
 app = Flask(__name__)
 
-# --- ⚠️ CRITICAL CREDENTIALS SECTION ⚠️ ---
-# We are hardcoding the ID and KEY here to eliminate all environment/file errors.
-APP_ID_INT = 2767721
+# --- 🔐 CREDENTIALS SECTION 🔐 ---
+APP_ID_INT = 2767721  # Checked: This is the correct ID (ends in 721)
 
-# 1. DELETE the text below between the triple quotes (""")
-# 2. PASTE your EXACT Private Key content (including BEGIN/END lines)
+# PASTE YOUR *NEW* KEY BELOW (Between the triple quotes)
+# It's okay if it looks messy or indented; the code below will fix it.
 PRIVATE_KEY_STR = """-----BEGIN RSA PRIVATE KEY-----
-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
+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
 -----END RSA PRIVATE KEY-----"""
-# ------------------------------------------
+# ---------------------------------
+
+def clean_pem_key(key_str):
+    """
+    Repairs the key by removing indentation and extra spaces 
+    caused by copy-pasting into VS Code.
+    """
+    if not key_str: return None
+    # Split into lines, trim whitespace from each line, and rejoin
+    lines = key_str.strip().split('\n')
+    clean_lines = [line.strip() for line in lines if line.strip()]
+    return '\n'.join(clean_lines)
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
@@ -70,17 +79,17 @@ def webhook():
         try:
             installation_id = payload['installation']['id']
             
-            # Authenticate using the DIRECT string (No file lookups)
-            cleaned_key = textwrap.dedent(PRIVATE_KEY_STR).strip()
+            # --- AUTHENTICATION FIX ---
+            final_key = clean_pem_key(PRIVATE_KEY_STR)
             print(f"🔐 Authenticating App ID {APP_ID_INT}...")
-            app_api = GhApi(app_id=APP_ID_INT, private_key=cleaned_key)
             
+            app_api = GhApi(app_id=APP_ID_INT, private_key=final_key)
             token = app_api.apps.create_installation_access_token(installation_id).token
             print("✅ Authentication Successful! Token received.")
             
             repo_api = GhApi(token=token)
-
-            # Process PR
+            
+            # --- LOGIC START ---
             pr_number = payload['pull_request']['number']
             repo_full_name = payload['repository']['full_name']
             repo_owner, repo_name = repo_full_name.split('/')

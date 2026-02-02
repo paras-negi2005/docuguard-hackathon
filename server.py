@@ -11,8 +11,9 @@ from utils import find_nearest_readme
 load_dotenv()
 app = Flask(__name__)
 
+# --- CONFIG ---
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-APP_ID = os.getenv("APP_ID")
+# We don't need to load APP_ID from env anymore because we are hardcoding it below.
 
 def verify_signature(payload_body, header_signature):
     if not WEBHOOK_SECRET: return True
@@ -33,19 +34,27 @@ def webhook():
 
     if event == 'pull_request' and payload['action'] in ['opened', 'synchronize']:
         try:
-            # 1. Get Private Key
+            # 1. Get Private Key (with sanitization)
             path = os.getenv("PRIVATE_KEY_PATH", "private-key.pem")
+            
             if os.path.exists(path):
                 with open(path, 'r') as f:
-                    private_key = f.read()
+                    # .strip() removes the invisible 'newline' characters that break Windows keys
+                    private_key = f.read().strip()
             else:
+                print(f"❌ Error: Key file not found at {path}")
                 return jsonify({"error": "Key missing"}), 500
 
             installation_id = payload['installation']['id']
             
-            # 2. Authenticate (THE FIX: int(APP_ID))
-            app_api = GhApi(app_id=int(APP_ID), private_key=private_key)
+            # 2. Authenticate (HARDCODED ID + SANITIZED KEY)
+            # We hardcode 2767721 to guarantee it is an Integer, eliminating the 401 cause.
+            app_api = GhApi(app_id=2767721, private_key=private_key)
+            
+            # Create the token
             token = app_api.apps.create_installation_access_token(installation_id).token
+            
+            # Login as the Installation
             repo_api = GhApi(token=token)
 
             # 3. Process PR
@@ -59,8 +68,11 @@ def webhook():
             repo_files = [f.filename for f in files] + ["README.md"]
 
             for file in files:
-                if file.filename.endswith(('.py', '.js', '.ts', '.go', '.java')):
+                # Only check code files
+                if file.filename.endswith(('.py', '.js', '.ts', '.go', '.java', '.cpp')):
                     diff = file.patch if hasattr(file, 'patch') else ""
+                    
+                    # Find closest README
                     readme_path = find_nearest_readme(file.filename, repo_files)
                     
                     try:
@@ -69,17 +81,23 @@ def webhook():
                     except:
                         readme_text = ""
 
+                    # Ask the Brain
                     suggestion = analyze_code_vs_docs(diff, readme_text, file.filename)
                     
+                    # Post comment if needed
                     if suggestion.strip().upper() != "OK":
                         body = f"### 🛡️ DocuGuard Review\n{suggestion}"
                         repo_api.issues.create_comment(repo_owner, repo_name, pr_number, body=body)
                         print(f"✅ Comment posted on {file.filename}")
+                    else:
+                        print(f"✨ {file.filename} looks good.")
 
             return jsonify({"status": "success"}), 200
 
         except Exception as e:
             print(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
             return jsonify({"error": str(e)}), 500
 
     return jsonify({"status": "ignored"}), 200

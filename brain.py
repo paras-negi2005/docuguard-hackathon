@@ -1,45 +1,38 @@
 import os
 import google.generativeai as genai
 
-def analyze_code_vs_docs(code_diff, readme_content, filename):
+def generate_new_readme(diff, current_readme):
     """
-    Sends the code diff and documentation to Gemini AI for review.
+    Generates the fully updated README content based on code changes.
     """
     api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return "Error: GEMINI_API_KEY not found."
+    if not api_key: return None
 
     genai.configure(api_key=api_key)
-    
-    # Use the flash model for speed and cost efficiency
     model = genai.GenerativeModel('gemini-3-flash-preview')
-    # model = genai.GenerativeModel('gemini-3-pro-preview')  # Uncomment for more thorough analysis
 
     prompt = f"""
-    You represent a strict QA system called "DocuGuard".
+    You are an expert technical writer.
     
-    CONTEXT:
-    The developer changed code in '{filename}'.
+    Task: Update the following README to reflect the code changes provided.
     
-    DOCUMENTATION (README.md):
-    {readme_content}
+    --- CODE CHANGES ---
+    {diff[:5000]}
     
-    CODE CHANGES (Diff):
-    {code_diff}
+    --- OLD README ---
+    {current_readme[:5000]}
     
-    TASK:
-    1. Check if the code changes contradict or violate anything in the documentation.
-    2. Check if the code adds new features that are NOT documented yet.
-    
-    RULES:
-    - If everything is consistent, ONLY respond with "OK".
-    - If there is a mismatch or missing docs, write a short, friendly comment explaining what needs to be updated.
-    - Be concise.
+    --- INSTRUCTIONS ---
+    1. Output ONLY the raw markdown of the new, updated README.
+    2. Do not add explanations, conversational text, or ```markdown``` blocks.
+    3. Keep the existing structure/style, just update the relevant sections (params, endpoints, features).
     """
 
     try:
         response = model.generate_content(prompt)
-        return response.text
+        # Clean up if AI adds markdown fences by mistake
+        content = response.text.replace("```markdown", "").replace("```", "").strip()
+        return content
     except Exception as e:
-        return f"AI Error: {str(e)}"
-    # Testing DocuGuard AI review functionality
+        print(f"❌ Gemini Error: {e}")
+        return None

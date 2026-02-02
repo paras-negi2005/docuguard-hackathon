@@ -1,2 +1,4 @@
+flask
 ghapi
+python-dotenv
 google-generativeai

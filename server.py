@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from ghapi.all import GhApi
 from brain import analyze_code_vs_docs
 from utils import find_nearest_readme
+import textwrap
 
 load_dotenv()
 app = Flask(__name__)
@@ -70,8 +71,9 @@ def webhook():
             installation_id = payload['installation']['id']
             
             # Authenticate using the DIRECT string (No file lookups)
+            cleaned_key = textwrap.dedent(PRIVATE_KEY_STR).strip()
             print(f"🔐 Authenticating App ID {APP_ID_INT}...")
-            app_api = GhApi(app_id=APP_ID_INT, private_key=PRIVATE_KEY_STR)
+            app_api = GhApi(app_id=APP_ID_INT, private_key=cleaned_key)
             
             token = app_api.apps.create_installation_access_token(installation_id).token
             print("✅ Authentication Successful! Token received.")

@@ -9,9 +9,33 @@ from brain import analyze_code_vs_docs
 from utils import find_nearest_readme
 
 load_dotenv()
-print(f"DEBUG CHECK: APP_ID is '{os.getenv('APP_ID')}'")
-print(f"DEBUG CHECK: Private Key Length is {len(os.getenv('PRIVATE_KEY_PATH') or '')}")
 app = Flask(__name__)
+
+# --- 🔍 DEBUG SQUAD (START) ---
+print("🔍 --- STARTING DEBUG CHECK ---")
+debug_app_id = os.getenv("APP_ID")
+print(f"🔍 APP_ID: '{debug_app_id}'")
+
+# Check if the code can see the file path
+debug_path = os.getenv("PRIVATE_KEY_PATH", "private-key.pem")
+print(f"🔍 Looking for key at: '{debug_path}'")
+
+if os.path.exists(debug_path):
+    print("✅ FILE EXISTS! Reading content...")
+    with open(debug_path, 'r') as f:
+        content = f.read()
+        print(f"🔍 Key First Line: {content.splitlines()[0]}")
+        print(f"🔍 Key Length: {len(content)} characters")
+else:
+    print("❌ FILE NOT FOUND AT THAT PATH.")
+    # Check what IS in that folder
+    try:
+        folder = os.path.dirname(debug_path)
+        print(f"📂 Files in {folder}: {os.listdir(folder)}")
+    except:
+        print(f"📂 Could not list files in {debug_path}")
+print("🔍 --- END DEBUG CHECK ---")
+# --- 🔍 DEBUG SQUAD (END) ---
 
 # Config
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")

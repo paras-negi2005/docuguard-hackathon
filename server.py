@@ -1,106 +1,116 @@
 import os
 import base64
+import hmac
+import hashlib
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from ghapi.all import GhApi
-
-# Import the brain function
 from brain import analyze_code_vs_docs
+from utils import find_nearest_readme
 
-# Load environment variables
 load_dotenv()
-
 app = Flask(__name__)
 
-@app.route('/', methods=['GET'])
-def home():
-    return "DocuGuard is Alive!", 200
+# Config
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+APP_ID = os.getenv("APP_ID")
+
+def verify_signature(payload_body, header_signature):
+    """Verifies that the request actually came from GitHub."""
+    if not WEBHOOK_SECRET:
+        return True 
+    if not header_signature:
+        return False
+    sha_name, signature = header_signature.split('=')
+    if sha_name != 'sha256':
+        return False
+    mac = hmac.new(WEBHOOK_SECRET.encode(), msg=payload_body, digestmod=hashlib.sha256)
+    return hmac.compare_digest(mac.hexdigest(), signature)
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    # 1. Parse Data
+    # 1. Security Check
+    signature = request.headers.get('X-Hub-Signature-256')
+    if not verify_signature(request.data, signature):
+        return jsonify({"msg": "Invalid Signature"}), 401
+
     payload = request.json
     event = request.headers.get('X-GitHub-Event')
 
-    # 2. Filter: Only listen to Pull Request events
-    if event == 'pull_request' and payload['action'] in ['opened', 'synchronize', 'reopened']:
-        
+    # 2. Filter Events
+    if event == 'pull_request' and payload['action'] in ['opened', 'synchronize']:
         try:
-            # --- AUTHENTICATION START ---
-            
-            # Load the Private Key
-            # Check if we are on Render (Env Var) or Local (File)
-            private_key = os.getenv("PRIVATE_KEY_CONTENT") 
+            # --- AUTHENTICATION (The Fixed Part) ---
+            # Try to get key from Env Var (Render) first, then File (Local)
+            private_key = os.getenv("PRIVATE_KEY_CONTENT")
             if not private_key:
-                # Fallback for local testing
-                with open(os.getenv("PRIVATE_KEY_PATH", "private-key.pem"), 'r') as f:
-                    private_key = f.read()
-
-            app_id = os.getenv("APP_ID")
-            installation_id = payload['installation']['id']
-
-            # Authenticate as the App (JWT)
-            auth_api = GhApi(app_id=app_id, private_key=private_key, token=None)
-
-            # 🛠️ THE FIX IS HERE 🛠️
-            # The guide used a deleted function. This is the correct new way:
-            token = auth_api.apps.create_installation_access_token(installation_id).token
-
-            # Re-initialize API with the actual Token (to do things)
-            repo_api = GhApi(token=token)
+                path = os.getenv("PRIVATE_KEY_PATH", "private-key.pem")
+                if os.path.exists(path):
+                    with open(path, 'r') as f:
+                        private_key = f.read()
             
-            # --- AUTHENTICATION END ---
+            if not private_key:
+                print("❌ Error: Private Key not found!")
+                return jsonify({"error": "No Private Key"}), 500
 
-            # 3. Get PR Details
+            installation_id = payload['installation']['id']
+            
+            # Log in as App
+            app_api = GhApi(app_id=APP_ID, private_key=private_key)
+            
+            # Create Token (The CORRECT Command)
+            token = app_api.apps.create_installation_access_token(installation_id).token
+            
+            # Log in as Installation (to post comments)
+            repo_api = GhApi(token=token)
+            # ---------------------------------------
+
             pr_number = payload['pull_request']['number']
-            repo_owner = payload['repository']['owner']['login']
-            repo_name = payload['repository']['name']
+            repo_full_name = payload['repository']['full_name']
+            repo_owner, repo_name = repo_full_name.split('/')
 
             print(f"🚀 Processing PR #{pr_number} in {repo_name}...")
 
-            # 4. Get the Diff (Code Changes)
+            # 3. Get Changed Files
             files = repo_api.pulls.list_files(repo_owner, repo_name, pr_number)
             
+            # 4. Mock a file list for utils (simplification for hackathon)
+            repo_files = [f.filename for f in files] + ["README.md"]
+
             for file in files:
                 filename = file.filename
-                
-                # Only analyze code files, ignore images/configs
-                if filename.endswith(('.py', '.js', '.ts', '.go', '.java', '.cpp')):
+                # Only check code files
+                if filename.endswith(('.py', '.js', '.ts', '.go', '.java')):
+                    diff_text = file.patch if hasattr(file, 'patch') else ""
                     
-                    print(f"🔎 Analyzing {filename}...")
-                    diff_text = file.patch if hasattr(file, 'patch') else "New File"
-
-                    # 5. Get the README (Simple fetch)
+                    # 5. Get README
                     try:
-                        readme_obj = repo_api.repos.get_content(repo_owner, repo_name, "README.md")
-                        readme_content = base64.b64decode(readme_obj.content).decode('utf-8')
+                        # Find the correct README using utils
+                        readme_path = find_nearest_readme(filename, repo_files)
+                        readme_obj = repo_api.repos.get_content(repo_owner, repo_name, readme_path)
+                        readme_text = base64.b64decode(readme_obj.content).decode('utf-8')
                     except:
-                        print("⚠️ No README found, assuming empty.")
-                        readme_content = ""
+                        readme_text = ""
 
-                    # 6. ASK GEMINI (The Brain)
-                    ai_comment = analyze_code_vs_docs(diff_text, readme_content, filename)
+                    # 6. Ask Gemini
+                    ai_suggestion = analyze_code_vs_docs(diff_text, readme_text, filename)
 
-                    # 7. Post Comment if unsafe
-                    if ai_comment.strip() != "OK":
-                        body = f"### 🤖 DocuGuard Alert\n{ai_comment}"
+                    # 7. Post Comment if needed
+                    if ai_suggestion.strip().upper() != "OK":
+                        print(f"✍️ Posting comment on {filename}...")
+                        body = f"### 🛡️ DocuGuard Review\n{ai_suggestion}"
                         repo_api.issues.create_comment(repo_owner, repo_name, pr_number, body=body)
-                        print(f"✅ Comment posted on {filename}")
-                    else:
-                        print(f"✨ {filename} is safe.")
 
             return jsonify({"status": "success"}), 200
 
         except Exception as e:
-            print(f"❌ Error processing PR: {e}")
-            # Printing the full traceback helps debugging
+            print(f"❌ Error: {e}")
             import traceback
-            traceback.print_exc()
-            return jsonify({"status": "error", "message": str(e)}), 500
+            traceback.print_exc() # Print full error to logs
+            return jsonify({"error": str(e)}), 500
 
     return jsonify({"status": "ignored"}), 200
 
 if __name__ == '__main__':
-    # Run on port 10000 for Render, or default 3000
     port = int(os.environ.get('PORT', 3000))
     app.run(host='0.0.0.0', port=port)

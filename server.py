@@ -9,6 +9,8 @@ from brain import analyze_code_vs_docs
 from utils import find_nearest_readme
 
 load_dotenv()
+print(f"DEBUG CHECK: APP_ID is '{os.getenv('APP_ID')}'")
+print(f"DEBUG CHECK: Private Key Length is {len(os.getenv('PRIVATE_KEY_PATH') or '')}")
 app = Flask(__name__)
 
 # Config

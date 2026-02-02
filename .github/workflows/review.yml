@@ -1,0 +1,33 @@
+name: DocuGuard AI Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write  # Critical: Allows the bot to post comments
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run DocuGuard
+        env:
+          # GitHub provides this token automatically
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # You must add this to Repo Settings > Secrets
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python action.py

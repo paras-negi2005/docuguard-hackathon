@@ -1,50 +1,44 @@
 import os
 import google.generativeai as genai
-from dotenv import load_dotenv
 
-load_dotenv()
+def analyze_code_vs_docs(code_diff, readme_content, filename):
+    """
+    Sends the code diff and documentation to Gemini AI for review.
+    """
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return "Error: GEMINI_API_KEY not found."
 
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    print("⚠️ Warning: GEMINI_API_KEY missing.")
-
-genai.configure(api_key=api_key)
-
-# Use gemini-3-flash-preview
-MODEL_NAME = 'gemini-3-flash-preview' 
-
-# MODEL_NAME = 'gemini-3-pro'  # Uncomment to use Gemini Pro if available
-
-try:
-    model = genai.GenerativeModel(MODEL_NAME)
-except:
-    model = genai.GenerativeModel('gemini-pro')
-
-def analyze_code_vs_docs(diff_text, readme_text, filename):
-    print(f"🧠 Asking Gemini about {filename}...")
+    genai.configure(api_key=api_key)
+    
+    # Use the flash model for speed and cost efficiency
+    model = genai.GenerativeModel('gemini-3-flash-preview')
+    # model = genai.GenerativeModel('gemini-3-pro-preview')  # Uncomment for more thorough analysis
 
     prompt = f"""
-    ROLE: You are DocuGuard, a strict code reviewer.
-    GOAL: Compare the code changes in '{filename}' against the README.
-
-    === CODE CHANGES ===
-    {diff_text}
-
-    === CURRENT README ===
-    {readme_text}
-
+    You represent a strict QA system called "DocuGuard".
+    
+    CONTEXT:
+    The developer changed code in '{filename}'.
+    
+    DOCUMENTATION (README.md):
+    {readme_content}
+    
+    CODE CHANGES (Diff):
+    {code_diff}
+    
     TASK:
-    1. Identify NEW environment variables, API endpoints, or setup steps in the code.
-    2. Check if the README already explains them.
-    3. If MISSING, write the exact Markdown text needed to fix it.
-
-    OUTPUT FORMAT:
-    - If everything is documented or no docs needed, return exactly: "OK"
-    - If docs are missing, return a short explanation followed by a markdown block with the fix.
+    1. Check if the code changes contradict or violate anything in the documentation.
+    2. Check if the code adds new features that are NOT documented yet.
+    
+    RULES:
+    - If everything is consistent, ONLY respond with "OK".
+    - If there is a mismatch or missing docs, write a short, friendly comment explaining what needs to be updated.
+    - Be concise.
     """
 
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Gemini Error: {str(e)}"
+        return f"AI Error: {str(e)}"

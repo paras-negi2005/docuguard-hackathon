@@ -42,3 +42,4 @@ def analyze_code_vs_docs(code_diff, readme_content, filename):
         return response.text
     except Exception as e:
         return f"AI Error: {str(e)}"
+    # Testing DocuGuard AI review functionality
